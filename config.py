@@ -35,12 +35,13 @@ TRADE_INTERVAL = 15          # Segundos entre operaciones
 MAX_TRADES_PER_DAY = 200     # Límite de operaciones por día
 
 # =============================================
-# ANÁLISIS TÉCNICO
+# ANÁLISIS TÉCNICO (Scalping Seguro)
 # =============================================
-TICK_HISTORY_COUNT = 20      # Número de ticks para analizar tendencia
-RSI_PERIOD = 14              # Período del RSI
-RSI_OVERSOLD = 35            # Umbral de sobreventa (comprar CALL)
-RSI_OVERBOUGHT = 65          # Umbral de sobrecompra (comprar PUT)
+TICK_HISTORY_COUNT = 30      # Historial de ticks para calcular EMA y RSI
+RSI_PERIOD = 7               # Período del RSI rápido para scalping de alta frecuencia
+RSI_OVERSOLD = 35            # Umbral de sobreventa para comprar CALL
+RSI_OVERBOUGHT = 65          # Umbral de sobrecompra para comprar PUT
+EMA_PERIOD = 10              # Período de la EMA de tendencia principal
 
 # =============================================
 # LOGGING

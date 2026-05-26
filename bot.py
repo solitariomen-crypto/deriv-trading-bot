@@ -125,6 +125,16 @@ class DerivTradingBot:
         # Haremos consultas puntuales cada trade para mantener el WebSocket ligero y evitar saturación en GitHub Actions.
         pass
 
+    def calculate_ema(self, prices, period):
+        """Calcula la Media Móvil Exponencial (EMA) sobre los precios"""
+        if len(prices) < period:
+            return prices[-1]
+        multiplier = 2 / (period + 1)
+        ema = prices[0]
+        for price in prices[1:]:
+            ema = (price - ema) * multiplier + ema
+        return ema
+
     def calculate_rsi(self, prices, period=14):
         """Calcula el RSI en base a una lista de precios pura (sin librerías pesadas)"""
         if len(prices) < period + 1:
@@ -154,31 +164,43 @@ class DerivTradingBot:
 
     def get_market_signal(self):
         """
-        Estrategia Ultra Segura de Análisis Técnico
-        Usa RSI e indicadores de tendencia sobre los últimos ticks.
+        Estrategia de Scalping Profesional y Seguro
+        Usa EMA(10) para definir tendencia y RSI(7) para entrar en retrocesos.
         Retorna 'CALL' (comprar al alza), 'PUT' (comprar a la baja) o None (esperar).
         """
         if len(self.ticks_history) < config.TICK_HISTORY_COUNT:
             return None
             
         prices = self.ticks_history[-config.TICK_HISTORY_COUNT:]
+        current_price = prices[-1]
+        
+        # 1. Calcular Indicadores
         rsi = self.calculate_rsi(prices, config.RSI_PERIOD)
+        ema = self.calculate_ema(prices, config.EMA_PERIOD)
         
-        # Calcular tendencia simple de corto plazo (últimos 5 ticks)
-        short_term = prices[-5:]
-        is_trending_up = all(short_term[i] > short_term[i-1] for i in range(1, len(short_term)))
-        is_trending_down = all(short_term[i] < short_term[i-1] for i in range(1, len(short_term)))
+        # 2. Identificar tendencia
+        is_uptrend = current_price > ema
+        is_downtrend = current_price < ema
         
-        logger.info(f"Análisis Técnico -> Último precio: {prices[-1]} | RSI: {rsi:.2f}")
+        logger.info(f"Scalping -> Precio: {current_price:.3f} | EMA({config.EMA_PERIOD}): {ema:.3f} | RSI({config.RSI_PERIOD}): {rsi:.2f}")
 
-        # Filtro Ultra Seguro: Comprar CALL sólo si está en Sobreventa extrema Y empieza a subir
-        if rsi <= config.RSI_OVERSOLD and is_trending_up:
-            logger.info("🟢 SEÑAL DE COMPRA: Mercado sobrevendido con rebote alcista. Tipo: CALL (Subida)")
+        # 3. Reglas de entrada para Scalping Seguro:
+        # - En tendencia alcista, compramos CALL (al alza) cuando hay un retroceso a zona de sobreventa (RSI <= 38)
+        if is_uptrend and rsi <= config.RSI_OVERSOLD:
+            logger.info("🟢 SEÑAL DE COMPRA (Scalping Alcista): Comprando retroceso en tendencia alcista. Tipo: CALL")
             return "CALL"
             
-        # Comprar PUT sólo si está en Sobrecompra extrema Y empieza a bajar
-        elif rsi >= config.RSI_OVERBOUGHT and is_trending_down:
-            logger.info("🔴 SEÑAL DE VENTA: Mercado sobrecomprado con retroceso bajista. Tipo: PUT (Caída)")
+        # - En tendencia bajista, compramos PUT (a la baja) cuando hay un rebote a zona de sobrecompra (RSI >= 62)
+        elif is_downtrend and rsi >= config.RSI_OVERBOUGHT:
+            logger.info("🔴 SEÑAL DE VENTA (Scalping Bajista): Vendiendo rebote en tendencia bajista. Tipo: PUT")
+            return "PUT"
+            
+        # - Extrema sobreventa/sobrecompra (por si el mercado está lateral pero muy estirado)
+        elif rsi <= 25:
+            logger.info("🟢 SEÑAL DE COMPRA (Sobreventa Extrema): Rebote inmediato. Tipo: CALL")
+            return "CALL"
+        elif rsi >= 75:
+            logger.info("🔴 SEÑAL DE VENTA (Sobrecompra Extrema): Caída inmediata. Tipo: PUT")
             return "PUT"
             
         return None
