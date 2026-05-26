@@ -52,6 +52,6 @@ TRADES_CSV = "trades_history.csv"
 # =============================================
 # NOTIFICACIONES DE WHATSAPP (CallMeBot)
 # =============================================
-WHATSAPP_ENABLED = False     # Cambia a True para activar notificaciones en tu celular
-WHATSAPP_PHONE = ""          # Tu número de WhatsApp con código de país (Ej: "+584120000000")
-WHATSAPP_API_KEY = ""        # Tu API Key gratuita de CallMeBot (Ver README.md para obtenerla)
+WHATSAPP_ENABLED = True     # Cambia a True para activar notificaciones en tu celular
+WHATSAPP_PHONE = "+584141629417"          # Tu número de WhatsApp con código de país (Ej: "+584120000000")
+WHATSAPP_API_KEY = "3610205"        # Tu API Key gratuita de CallMeBot (Ver README.md para obtenerla)
