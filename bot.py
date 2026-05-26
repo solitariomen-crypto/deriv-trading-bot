@@ -30,10 +30,12 @@ class DerivTradingBot:
     def __init__(self):
         env_token = os.environ.get("DERIV_API_TOKEN")
         if env_token and env_token.strip():
-            self.api_token = env_token.strip()
+            # Limpiar espacios y comillas accidentales que invalidan la estructura del token
+            self.api_token = env_token.strip().replace('"', '').replace("'", "")
             logger.info("Usando API Token provisto por la variable de entorno de GitHub.")
         else:
-            self.api_token = config.API_TOKEN.strip() if config.API_TOKEN else ""
+            raw_token = config.API_TOKEN if config.API_TOKEN else ""
+            self.api_token = raw_token.strip().replace('"', '').replace("'", "")
             logger.info("Usando API Token predeterminado de la configuración (o vacío).")
             
         self.ws_url = config.WS_URL
