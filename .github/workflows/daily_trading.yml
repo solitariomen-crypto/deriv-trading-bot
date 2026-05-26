@@ -7,6 +7,9 @@ on:
   workflow_dispatch:
     # Permite ejecutarlo manualmente desde la pestaña Actions de tu repositorio en GitHub
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   trade:
     runs-on: ubuntu-latest
