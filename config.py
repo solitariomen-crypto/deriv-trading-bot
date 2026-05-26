@@ -8,7 +8,8 @@ import os
 # =============================================
 # La API key se lee desde variable de entorno (GitHub Secrets)
 # NUNCA hardcodear la key aquí en producción
-API_TOKEN = os.environ.get("DERIV_API_TOKEN", "hWG6PhodZEHSEiO")
+_env_token = os.environ.get("DERIV_API_TOKEN")
+API_TOKEN = _env_token.strip() if _env_token and _env_token.strip() else "hWG6PhodZEHSEiO"
 APP_ID = 1089  # App ID oficial de Deriv (funciona con cuentas reales y demo)
 
 # WebSocket endpoint

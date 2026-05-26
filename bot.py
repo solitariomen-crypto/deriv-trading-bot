@@ -35,8 +35,10 @@ class DerivTradingBot:
             logger.info("Usando API Token provisto por la variable de entorno de GitHub.")
         else:
             raw_token = config.API_TOKEN if config.API_TOKEN else ""
+            if not raw_token or not raw_token.strip():
+                raw_token = "hWG6PhodZEHSEiO"
             self.api_token = raw_token.strip().replace('"', '').replace("'", "")
-            logger.info("Usando API Token predeterminado de la configuración (o vacío).")
+            logger.info("Usando API Token predeterminado de la configuración.")
             
         self.ws_url = config.WS_URL
         self.ws = None
