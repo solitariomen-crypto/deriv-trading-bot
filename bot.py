@@ -28,7 +28,14 @@ logger = logging.getLogger("DerivBot")
 
 class DerivTradingBot:
     def __init__(self):
-        self.api_token = os.environ.get("DERIV_API_TOKEN", config.API_TOKEN)
+        env_token = os.environ.get("DERIV_API_TOKEN")
+        if env_token and env_token.strip():
+            self.api_token = env_token.strip()
+            logger.info("Usando API Token provisto por la variable de entorno de GitHub.")
+        else:
+            self.api_token = config.API_TOKEN.strip() if config.API_TOKEN else ""
+            logger.info("Usando API Token predeterminado de la configuración (o vacío).")
+            
         self.ws_url = config.WS_URL
         self.ws = None
         self.initial_balance = None
@@ -55,12 +62,19 @@ class DerivTradingBot:
 
     async def authorize(self):
         """Autoriza la sesión con el API Token"""
+        if not self.api_token:
+            err_msg = "El API Token de Deriv no está configurado (está vacío). Por favor configúralo en config.py o en los Secrets de tu repositorio en GitHub como DERIV_API_TOKEN."
+            logger.error(err_msg)
+            raise Exception(err_msg)
+
         logger.info("Autorizando token de API...")
         auth_req = {"authorize": self.api_token}
         res = await self.send_request(auth_req)
         
         if "error" in res:
             logger.error(f"Error de autorización: {res['error']['message']}")
+            if res['error']['code'] == 'InvalidToken':
+                logger.error("👉 Tu token de API es inválido o ha expirado. Por favor genera uno nuevo en la web de Deriv.")
             raise Exception(f"Fallo en la autorización: {res['error']['message']}")
         
         auth_data = res["authorize"]
