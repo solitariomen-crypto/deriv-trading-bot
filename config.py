@@ -48,3 +48,10 @@ EMA_PERIOD = 10              # Período de la EMA de tendencia principal
 # =============================================
 LOG_FILE = "trading_log.txt"
 TRADES_CSV = "trades_history.csv"
+
+# =============================================
+# NOTIFICACIONES DE WHATSAPP (CallMeBot)
+# =============================================
+WHATSAPP_ENABLED = False     # Cambia a True para activar notificaciones en tu celular
+WHATSAPP_PHONE = ""          # Tu número de WhatsApp con código de país (Ej: "+584120000000")
+WHATSAPP_API_KEY = ""        # Tu API Key gratuita de CallMeBot (Ver README.md para obtenerla)

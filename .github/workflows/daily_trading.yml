@@ -2,8 +2,9 @@ name: Daily Deriv Auto-Trading Bot
 
 on:
   schedule:
-    # Se ejecuta todos los días a las 09:00 UTC (Ajusta la hora UTC a tu preferencia)
-    - cron: '0 9 * * *'
+    # Se ejecuta todos los días a las 19:30 hora Venezuela (23:30 UTC)
+    # permitiendo que el bot opere y envíe el reporte cerca de las 20:00 hora Venezuela
+    - cron: '30 23 * * *'
   workflow_dispatch:
     # Permite ejecutarlo manualmente desde la pestaña Actions de tu repositorio en GitHub
 
@@ -33,6 +34,10 @@ jobs:
       env:
         # Vincula la API key de manera ultra segura usando los Secrets de GitHub
         DERIV_API_TOKEN: ${{ secrets.DERIV_API_TOKEN }}
+        # Variables para las notificaciones de WhatsApp en el celular
+        WHATSAPP_ENABLED: 'true'
+        WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+        WHATSAPP_API_KEY: ${{ secrets.WHATSAPP_API_KEY }}
       run: python bot.py
 
     - name: Archive trading logs and history

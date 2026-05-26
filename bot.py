@@ -5,6 +5,8 @@ import os
 import sys
 import time
 from datetime import datetime
+import urllib.parse
+import urllib.request
 import websockets
 
 # Importar configuración
@@ -91,6 +93,35 @@ class DerivTradingBot:
         if not os.path.exists(config.TRADES_CSV):
             with open(config.TRADES_CSV, "w", encoding="utf-8") as f:
                 f.write("timestamp,trade_type,stake,profit_loss,status,balance\n")
+
+    def send_whatsapp(self, message):
+        """Envía una notificación de WhatsApp usando la API gratuita de CallMeBot"""
+        enabled = os.environ.get("WHATSAPP_ENABLED", "true" if config.WHATSAPP_ENABLED else "false").lower() == "true"
+        if not enabled:
+            return
+            
+        phone = os.environ.get("WHATSAPP_PHONE") or config.WHATSAPP_PHONE
+        apikey = os.environ.get("WHATSAPP_API_KEY") or config.WHATSAPP_API_KEY
+        
+        if not phone or not apikey:
+            logger.warning("⚠️ WhatsApp habilitado pero falta configurar el teléfono o la API key.")
+            return
+            
+        phone_clean = "".join([c for c in phone.strip() if c.isdigit() or c == "+"])
+        
+        try:
+            encoded_msg = urllib.parse.quote(message)
+            url = f"https://api.callmebot.com/whatsapp.php?phone={phone_clean}&text={encoded_msg}&apikey={apikey.strip()}"
+            
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                status = response.getcode()
+                if status == 200:
+                    logger.info("📱 Notificación de WhatsApp enviada con éxito.")
+                else:
+                    logger.error(f"❌ Error al enviar WhatsApp. Código HTTP: {status}")
+        except Exception as e:
+            logger.error(f"❌ Excepción al intentar enviar WhatsApp: {e}")
 
     async def update_balance(self):
         """Solicita el balance actual de la cuenta"""
@@ -321,6 +352,17 @@ class DerivTradingBot:
             logger.info(f" Objetivo: +${config.DAILY_PROFIT_TARGET:.2f} | Límite Pérdida: -${config.DAILY_LOSS_LIMIT:.2f}")
             logger.info("==================================================")
 
+            # Enviar notificación de inicio de jornada por WhatsApp
+            self.send_whatsapp(
+                f"🤖 *Deriv Scalper Bot - Jornada Iniciada*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"💵 *Balance Inicial:* ${self.initial_balance:.2f} USD\n"
+                f"🎯 *Objetivo diario:* +${config.DAILY_PROFIT_TARGET:.2f} USD\n"
+                f"🛑 *Límite de pérdida:* -${config.DAILY_LOSS_LIMIT:.2f} USD\n"
+                f"📊 *Mercado:* Index {config.SYMBOL}\n"
+                f"⏱️ *Hora:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+            )
+
             while self.running:
                 # 1. Verificar condiciones de parada (Take Profit / Stop Loss)
                 if self.session_profit >= config.DAILY_PROFIT_TARGET:
@@ -379,8 +421,32 @@ class DerivTradingBot:
             logger.info(f" Ganancia/Pérdida neta: ${self.session_profit:.2f}")
             logger.info("==================================================")
 
+            # Generar estado de finalización y enviar notificación final
+            status_emoji = "🎯" if self.session_profit >= config.DAILY_PROFIT_TARGET else "🛑" if self.session_profit <= -config.DAILY_LOSS_LIMIT else "⏳"
+            status_text = "META ALCANZADA" if self.session_profit >= config.DAILY_PROFIT_TARGET else "STOP LOSS ALCANZADO" if self.session_profit <= -config.DAILY_LOSS_LIMIT else "LÍMITE DIARIO / PARADA"
+            
+            self.send_whatsapp(
+                f"{status_emoji} *Deriv Scalper Bot - Jornada Finalizada*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📝 *Estado:* {status_text}\n"
+                f"💵 *Balance Inicial:* ${self.initial_balance:.2f} USD\n"
+                f"💰 *Balance Final:* ${self.current_balance:.2f} USD\n"
+                f"📈 *Resultado Neto:* {'+' if self.session_profit >= 0 else ''}${self.session_profit:.2f} USD\n"
+                f"🔄 *Operaciones:* {self.total_trades} (🟢 {self.wins} ganados / 🔴 {self.losses} perdidos)\n"
+                f"⏱️ *Hora:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+            )
+
         except Exception as e:
-            logger.exception(f"Ocurrió un error inesperado durante la ejecución: {e}")
+            err_msg = f"Ocurrió un error inesperado durante la ejecución: {e}"
+            logger.exception(err_msg)
+            
+            # Enviar notificación de error
+            self.send_whatsapp(
+                f"⚠️ *Deriv Scalper Bot - ALERTA DE ERROR*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🚨 El bot se ha detenido debido a un error crítico:\n"
+                f"`{str(e)}`"
+            )
         finally:
             if self.ws:
                 await self.ws.close()
