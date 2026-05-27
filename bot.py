@@ -53,6 +53,7 @@ class DerivTradingBot:
         self.losses = 0
         self.ticks_history = []
         self.running = True
+        self.account_balances = []   # Lista de todas las cuentas (demo + real)
 
     async def connect(self):
         """Establece conexión WebSocket con Deriv"""
@@ -122,6 +123,48 @@ class DerivTradingBot:
                     logger.error(f"❌ Error al enviar WhatsApp. Código HTTP: {status}")
         except Exception as e:
             logger.error(f"❌ Excepción al intentar enviar WhatsApp: {e}")
+
+    async def fetch_all_accounts(self):
+        """Obtiene los saldos de TODAS las cuentas (demo y reales) asociadas al token"""
+        logger.info("Consultando saldos de todas las cuentas (demo + real)...")
+        self.account_balances = []
+        try:
+            res = await self.send_request({"balance": 1, "account": "all"})
+            if "error" in res:
+                logger.warning(f"No se pudieron obtener todos los saldos: {res['error']['message']}")
+                return
+            
+            accounts = res.get("balance", {}).get("accounts", {})
+            for login_id, data in accounts.items():
+                account_type = "DEMO" if data.get("demo_account", 0) == 1 else "REAL"
+                currency = data.get("currency", "USD")
+                balance = float(data.get("balance", 0))
+                self.account_balances.append({
+                    "id": login_id,
+                    "type": account_type,
+                    "currency": currency,
+                    "balance": balance
+                })
+                logger.info(f"  [{account_type}] Cuenta {login_id}: {balance:.2f} {currency}")
+        except Exception as e:
+            logger.warning(f"Error al consultar todas las cuentas: {e}")
+
+    def format_accounts_for_whatsapp(self):
+        """Formatea la lista de cuentas para el mensaje de WhatsApp"""
+        if not self.account_balances:
+            return "  (No disponible)"
+        demos = [a for a in self.account_balances if a["type"] == "DEMO"]
+        reals = [a for a in self.account_balances if a["type"] == "REAL"]
+        lines = []
+        if reals:
+            lines.append("💳 *Cuentas REALES:*")
+            for a in reals:
+                lines.append(f"   • {a['id']}: {a['balance']:.2f} {a['currency']}")
+        if demos:
+            lines.append("🧪 *Cuentas DEMO:*")
+            for a in demos:
+                lines.append(f"   • {a['id']}: {a['balance']:.2f} {a['currency']}")
+        return "\n".join(lines)
 
     async def update_balance(self):
         """Solicita el balance actual de la cuenta"""
@@ -195,45 +238,66 @@ class DerivTradingBot:
 
     def get_market_signal(self):
         """
-        Estrategia de Scalping Profesional y Seguro
-        Usa EMA(10) para definir tendencia y RSI(7) para entrar en retrocesos.
-        Retorna 'CALL' (comprar al alza), 'PUT' (comprar a la baja) o None (esperar).
+        Estrategia de Scalping Mejorada v2.0
+        Combina EMA(10) + RSI(7) + Momentum de velas para mayor frecuencia de operaciones.
+        - Nivel 1 (Fuerte): EMA confirma tendencia Y RSI en zona extrema -> Opera
+        - Nivel 2 (Medio):  RSI en zona moderada + momentum de los últimos 3 ticks coincide -> Opera
+        - Nivel 3 (Puro):   RSI extremo (sobreventa/sobrecompra absoluta) sin importar EMA -> Opera
+        Retorna 'CALL', 'PUT' o None (esperar)
         """
         if len(self.ticks_history) < config.TICK_HISTORY_COUNT:
             return None
-            
+
         prices = self.ticks_history[-config.TICK_HISTORY_COUNT:]
         current_price = prices[-1]
-        
-        # 1. Calcular Indicadores
+
+        # 1. Calcular indicadores
         rsi = self.calculate_rsi(prices, config.RSI_PERIOD)
         ema = self.calculate_ema(prices, config.EMA_PERIOD)
-        
-        # 2. Identificar tendencia
-        is_uptrend = current_price > ema
-        is_downtrend = current_price < ema
-        
-        logger.info(f"Scalping -> Precio: {current_price:.3f} | EMA({config.EMA_PERIOD}): {ema:.3f} | RSI({config.RSI_PERIOD}): {rsi:.2f}")
+        ema_fast = self.calculate_ema(prices, 5)   # EMA rápida para confirmación
 
-        # 3. Reglas de entrada para Scalping Seguro:
-        # - En tendencia alcista, compramos CALL (al alza) cuando hay un retroceso a zona de sobreventa (RSI <= 38)
+        # Tendencia general (EMA lenta)
+        is_uptrend   = current_price > ema
+        is_downtrend = current_price < ema
+
+        # Momentum: dirección de los últimos 3 ticks consecutivos
+        last3 = prices[-3:]
+        momentum_up   = last3[-1] > last3[-2] > last3[-3]   # 3 velas verdes seguidas
+        momentum_down = last3[-1] < last3[-2] < last3[-3]   # 3 velas rojas seguidas
+
+        # Cruce de EMAs (5 cruza sobre 10 = señal)
+        ema_cross_up   = ema_fast > ema   # EMA corta por encima -> alcista
+        ema_cross_down = ema_fast < ema   # EMA corta por debajo -> bajista
+
+        logger.info(
+            f"Scalping v2 -> Precio: {current_price:.3f} | EMA10: {ema:.3f} | EMA5: {ema_fast:.3f} | "
+            f"RSI({config.RSI_PERIOD}): {rsi:.2f} | Momentum: {'↑' if momentum_up else '↓' if momentum_down else '→'}"
+        )
+
+        # ── NIVEL 1: Tendencia EMA + RSI extremo (señal más fuerte) ──────────────
         if is_uptrend and rsi <= config.RSI_OVERSOLD:
-            logger.info("🟢 SEÑAL DE COMPRA (Scalping Alcista): Comprando retroceso en tendencia alcista. Tipo: CALL")
+            logger.info("🟢 [Nv1] Retroceso en tendencia alcista. CALL")
             return "CALL"
-            
-        # - En tendencia bajista, compramos PUT (a la baja) cuando hay un rebote a zona de sobrecompra (RSI >= 62)
-        elif is_downtrend and rsi >= config.RSI_OVERBOUGHT:
-            logger.info("🔴 SEÑAL DE VENTA (Scalping Bajista): Vendiendo rebote en tendencia bajista. Tipo: PUT")
+        if is_downtrend and rsi >= config.RSI_OVERBOUGHT:
+            logger.info("🔴 [Nv1] Rebote en tendencia bajista. PUT")
             return "PUT"
-            
-        # - Extrema sobreventa/sobrecompra (por si el mercado está lateral pero muy estirado)
-        elif rsi <= 25:
-            logger.info("🟢 SEÑAL DE COMPRA (Sobreventa Extrema): Rebote inmediato. Tipo: CALL")
+
+        # ── NIVEL 2: Cruce de EMAs + Momentum confirmado ──────────────────────────
+        if ema_cross_up and momentum_up and rsi < 55:
+            logger.info("🟢 [Nv2] Cruce alcista + momentum positivo. CALL")
             return "CALL"
-        elif rsi >= 75:
-            logger.info("🔴 SEÑAL DE VENTA (Sobrecompra Extrema): Caída inmediata. Tipo: PUT")
+        if ema_cross_down and momentum_down and rsi > 45:
+            logger.info("🔴 [Nv2] Cruce bajista + momentum negativo. PUT")
             return "PUT"
-            
+
+        # ── NIVEL 3: RSI absolutamente extremo (independiente de tendencia) ───────
+        if rsi <= 22:
+            logger.info("🟢 [Nv3] RSI en sobreventa absoluta. CALL")
+            return "CALL"
+        if rsi >= 78:
+            logger.info("🔴 [Nv3] RSI en sobrecompra absoluta. PUT")
+            return "PUT"
+
         return None
 
     async def execute_trade(self, contract_type):
@@ -341,7 +405,10 @@ class DerivTradingBot:
         try:
             await self.connect()
             await self.authorize()
-            
+
+            # Obtener saldos de TODAS las cuentas (demo + real)
+            await self.fetch_all_accounts()
+
             # Cargar historial de mercado inicial
             if not await self.fetch_tick_history():
                 logger.error("No se pudo cargar el historial de ticks. Saliendo del programa.")
@@ -352,14 +419,16 @@ class DerivTradingBot:
             logger.info(f" Objetivo: +${config.DAILY_PROFIT_TARGET:.2f} | Límite Pérdida: -${config.DAILY_LOSS_LIMIT:.2f}")
             logger.info("==================================================")
 
-            # Enviar notificación de inicio de jornada por WhatsApp
+            # Enviar notificación de inicio de jornada por WhatsApp (con saldos)
+            accounts_text = self.format_accounts_for_whatsapp()
             self.send_whatsapp(
                 f"🤖 *Deriv Scalper Bot - Jornada Iniciada*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"💵 *Balance Inicial:* ${self.initial_balance:.2f} USD\n"
+                f"{accounts_text}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
                 f"🎯 *Objetivo diario:* +${config.DAILY_PROFIT_TARGET:.2f} USD\n"
                 f"🛑 *Límite de pérdida:* -${config.DAILY_LOSS_LIMIT:.2f} USD\n"
-                f"📊 *Mercado:* Index {config.SYMBOL}\n"
+                f"📊 *Mercado:* Volatility {config.SYMBOL}\n"
                 f"⏱️ *Hora:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
             )
 
@@ -421,19 +490,30 @@ class DerivTradingBot:
             logger.info(f" Ganancia/Pérdida neta: ${self.session_profit:.2f}")
             logger.info("==================================================")
 
+            # Actualizar saldos de todas las cuentas para el reporte final
+            await self.fetch_all_accounts()
+            accounts_text = self.format_accounts_for_whatsapp()
+
+            # Eficiencia de la sesión
+            win_rate = (self.wins / self.total_trades * 100) if self.total_trades > 0 else 0.0
+
             # Generar estado de finalización y enviar notificación final
             status_emoji = "🎯" if self.session_profit >= config.DAILY_PROFIT_TARGET else "🛑" if self.session_profit <= -config.DAILY_LOSS_LIMIT else "⏳"
-            status_text = "META ALCANZADA" if self.session_profit >= config.DAILY_PROFIT_TARGET else "STOP LOSS ALCANZADO" if self.session_profit <= -config.DAILY_LOSS_LIMIT else "LÍMITE DIARIO / PARADA"
-            
+            status_text = "META ALCANZADA ✅" if self.session_profit >= config.DAILY_PROFIT_TARGET else "STOP LOSS ALCANZADO" if self.session_profit <= -config.DAILY_LOSS_LIMIT else "FIN DE JORNADA"
+
             self.send_whatsapp(
-                f"{status_emoji} *Deriv Scalper Bot - Jornada Finalizada*\n"
+                f"{status_emoji} *Deriv Scalper Bot - Reporte Diario*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📝 *Estado:* {status_text}\n"
-                f"💵 *Balance Inicial:* ${self.initial_balance:.2f} USD\n"
-                f"💰 *Balance Final:* ${self.current_balance:.2f} USD\n"
                 f"📈 *Resultado Neto:* {'+' if self.session_profit >= 0 else ''}${self.session_profit:.2f} USD\n"
-                f"🔄 *Operaciones:* {self.total_trades} (🟢 {self.wins} ganados / 🔴 {self.losses} perdidos)\n"
-                f"⏱️ *Hora:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+                f"🔄 *Operaciones:* {self.total_trades} total\n"
+                f"   🟢 Ganadas: {self.wins}  |  🔴 Perdidas: {self.losses}\n"
+                f"   📊 Efectividad: {win_rate:.1f}%\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"💰 *Saldos Actualizados:*\n"
+                f"{accounts_text}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"⏱️ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
             )
 
         except Exception as e:
