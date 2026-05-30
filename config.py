@@ -16,7 +16,7 @@ WS_URL = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
 # =============================================
 SYMBOL = "R_10"          # Volatility 10 Index (el más estable de Deriv)
 STAKE_AMOUNT = 1.0       # $1 por operación
-MULTIPLIER = 2           # Multiplicador 2x (el más conservador disponible)
+MULTIPLIER = 400         # Multiplicador 400x (el más conservador disponible para R_10)
 
 # TP/SL automático en el servidor de Deriv
 TAKE_PROFIT_PCT = 0.10   # Cerrar al ganar +10% del stake  → +$0.10 en $1
