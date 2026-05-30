@@ -193,24 +193,20 @@ class DerivTradingBot:
         logger.info(f"Historial cargado. {len(self.ticks_history)} ticks obtenidos. Último precio: {self.ticks_history[-1]}")
         return True
 
-    async def subscribe_ticks(self):
-        """Suscribirse a ticks en tiempo real (opcional para ejecución continua)"""
-        # Para un bot de ejecución por pasos de bajo riesgo, podemos consultar el historial o suscribirnos.
-        # Haremos consultas puntuales cada trade para mantener el WebSocket ligero y evitar saturación en GitHub Actions.
-        pass
-
-    def calculate_ema(self, prices, period):
-        """Calcula la Media Móvil Exponencial (EMA) sobre los precios"""
+    def calculate_bollinger_bands(self, prices, period=20, std_dev=2.0):
+        """Calcula las Bandas de Bollinger (Superior, Media, Inferior)"""
         if len(prices) < period:
-            return prices[-1]
-        multiplier = 2 / (period + 1)
-        ema = prices[0]
-        for price in prices[1:]:
-            ema = (price - ema) * multiplier + ema
-        return ema
+            return None, None, None
+        recent_prices = prices[-period:]
+        sma = sum(recent_prices) / period
+        variance = sum((p - sma) ** 2 for p in recent_prices) / period
+        std = variance ** 0.5
+        upper = sma + std_dev * std
+        lower = sma - std_dev * std
+        return upper, sma, lower
 
     def calculate_rsi(self, prices, period=14):
-        """Calcula el RSI en base a una lista de precios pura (sin librerías pesadas)"""
+        """Calcula el RSI en base a una lista de precios pura"""
         if len(prices) < period + 1:
             return 50.0 # Neutro por defecto
         
@@ -236,94 +232,122 @@ class DerivTradingBot:
         rsi = 100.0 - (100.0 / (1.0 + rs))
         return rsi
 
+    def calculate_stochastic(self, prices, k_period=14, d_period=3):
+        """Calcula el Oscilador Estocástico (%K y %D) sobre ticks"""
+        if len(prices) < k_period + d_period:
+            return 50.0, 50.0  # Neutro por defecto
+        
+        k_values = []
+        # Calcular %K para los últimos d_period elementos para obtener la SMA del %D
+        for i in range(len(prices) - d_period, len(prices)):
+            window = prices[i - k_period + 1 : i + 1]
+            current_close = window[-1]
+            lowest_low = min(window)
+            highest_high = max(window)
+            
+            if highest_high == lowest_low:
+                k = 50.0
+            else:
+                k = ((current_close - lowest_low) / (highest_high - lowest_low)) * 100
+              
+            k_values.append(k)
+            
+        current_k = k_values[-1]
+        current_d = sum(k_values) / len(k_values)
+        return current_k, current_d
+
     def get_market_signal(self):
         """
-        Estrategia de Scalping Mejorada v2.0
-        Combina EMA(10) + RSI(7) + Momentum de velas para mayor frecuencia de operaciones.
-        - Nivel 1 (Fuerte): EMA confirma tendencia Y RSI en zona extrema -> Opera
-        - Nivel 2 (Medio):  RSI en zona moderada + momentum de los últimos 3 ticks coincide -> Opera
-        - Nivel 3 (Puro):   RSI extremo (sobreventa/sobrecompra absoluta) sin importar EMA -> Opera
-        Retorna 'CALL', 'PUT' o None (esperar)
+        Estrategia de Scalping Triple Confirmación v3.0
+        Usa Bandas de Bollinger, RSI y Oscilador Estocástico.
+        Retorna 'CALL' (para MULTUP), 'PUT' (para MULTDOWN) o None (esperar).
+        La entrada requiere que las 3 señales coincidan en la misma dirección
+        Y que el mercado no venga en contra (momentum a favor).
         """
         if len(self.ticks_history) < config.TICK_HISTORY_COUNT:
             return None
 
         prices = self.ticks_history[-config.TICK_HISTORY_COUNT:]
         current_price = prices[-1]
+        prev_price = prices[-2]
 
         # 1. Calcular indicadores
+        upper_band, middle_band, lower_band = self.calculate_bollinger_bands(prices, config.BB_PERIOD, config.BB_STD_DEV)
         rsi = self.calculate_rsi(prices, config.RSI_PERIOD)
-        ema = self.calculate_ema(prices, config.EMA_PERIOD)
-        ema_fast = self.calculate_ema(prices, 5)   # EMA rápida para confirmación
+        stoch_k, stoch_d = self.calculate_stochastic(prices, config.STOCH_K_PERIOD, config.STOCH_D_PERIOD)
 
-        # Tendencia general (EMA lenta)
-        is_uptrend   = current_price > ema
-        is_downtrend = current_price < ema
+        if upper_band is None or middle_band is None or lower_band is None:
+            return None
 
-        # Momentum: dirección de los últimos 3 ticks consecutivos
-        last3 = prices[-3:]
-        momentum_up   = last3[-1] > last3[-2] > last3[-3]   # 3 velas verdes seguidas
-        momentum_down = last3[-1] < last3[-2] < last3[-3]   # 3 velas rojas seguidas
+        # Rango de proximidad a las bandas (15% del semi-ancho de la banda)
+        bb_width = upper_band - lower_band
+        bb_margin = bb_width * 0.15 if bb_width > 0 else 0.0
 
-        # Cruce de EMAs (5 cruza sobre 10 = señal)
-        ema_cross_up   = ema_fast > ema   # EMA corta por encima -> alcista
-        ema_cross_down = ema_fast < ema   # EMA corta por debajo -> bajista
+        # Dirección del último tick (Momentum inmediato para asegurar que "no venga en contra")
+        is_rebound_up = current_price > prev_price
+        is_rebound_down = current_price < prev_price
 
         logger.info(
-            f"Scalping v2 -> Precio: {current_price:.3f} | EMA10: {ema:.3f} | EMA5: {ema_fast:.3f} | "
-            f"RSI({config.RSI_PERIOD}): {rsi:.2f} | Momentum: {'↑' if momentum_up else '↓' if momentum_down else '→'}"
+            f"Análisis Técnico -> Precio: {current_price:.3f} | "
+            f"BB: [{lower_band:.3f} - {middle_band:.3f} - {upper_band:.3f}] | "
+            f"RSI: {rsi:.2f} (SL:{config.RSI_OVERSOLD}/OB:{config.RSI_OVERBOUGHT}) | "
+            f"Stoch %K: {stoch_k:.1f}, %D: {stoch_d:.1f}"
         )
 
-        # ── NIVEL 1: Tendencia EMA + RSI extremo (señal más fuerte) ──────────────
-        if is_uptrend and rsi <= config.RSI_OVERSOLD:
-            logger.info("🟢 [Nv1] Retroceso en tendencia alcista. CALL")
+        # Confirmación de señal CALL (Compra):
+        # 1. El precio está en la zona de la banda inferior (soporte).
+        # 2. RSI en zona de sobreventa.
+        # 3. Estocástico en sobreventa con alineación alcista (%K > %D).
+        # 4. Momentum inmediato alcista (el último precio subió).
+        if (current_price <= lower_band + bb_margin and
+            rsi <= config.RSI_OVERSOLD and
+            stoch_k < config.STOCH_OVERSOLD and stoch_d < config.STOCH_OVERSOLD and
+            stoch_k > stoch_d and
+            is_rebound_up):
+            
+            logger.info("🟢 SEÑAL ALCISTA DETECTADA (Triple Confirmación + Momentum): Comprando MULTUP (CALL)")
             return "CALL"
-        if is_downtrend and rsi >= config.RSI_OVERBOUGHT:
-            logger.info("🔴 [Nv1] Rebote en tendencia bajista. PUT")
-            return "PUT"
 
-        # ── NIVEL 2: Cruce de EMAs + Momentum confirmado ──────────────────────────
-        if ema_cross_up and momentum_up and rsi < 55:
-            logger.info("🟢 [Nv2] Cruce alcista + momentum positivo. CALL")
-            return "CALL"
-        if ema_cross_down and momentum_down and rsi > 45:
-            logger.info("🔴 [Nv2] Cruce bajista + momentum negativo. PUT")
-            return "PUT"
-
-        # ── NIVEL 3: RSI absolutamente extremo (independiente de tendencia) ───────
-        if rsi <= 22:
-            logger.info("🟢 [Nv3] RSI en sobreventa absoluta. CALL")
-            return "CALL"
-        if rsi >= 78:
-            logger.info("🔴 [Nv3] RSI en sobrecompra absoluta. PUT")
+        # Confirmación de señal PUT (Venta):
+        # 1. El precio está en la zona de la banda superior (resistencia).
+        # 2. RSI en zona de sobrecompra.
+        # 3. Estocástico en sobrecompra con alineación bajista (%K < %D).
+        # 4. Momentum inmediato bajista (el último precio bajó).
+        if (current_price >= upper_band - bb_margin and
+            rsi >= config.RSI_OVERBOUGHT and
+            stoch_k > config.STOCH_OVERBOUGHT and stoch_d > config.STOCH_OVERBOUGHT and
+            stoch_k < stoch_d and
+            is_rebound_down):
+            
+            logger.info("🔴 SEÑAL BAJISTA DETECTADA (Triple Confirmación + Momentum): Comprando MULTDOWN (PUT)")
             return "PUT"
 
         return None
 
     async def execute_trade(self, contract_type):
-        """Ejecuta una operación pidiendo propuesta y luego comprando"""
-        logger.info(f"Iniciando compra de contrato {contract_type} de ${config.STAKE_AMOUNT}...")
+        """Ejecuta una operación multiplicadora y la gestiona activamente (TP 10% / SL 30%)"""
+        deriv_contract_type = "MULTUP" if contract_type == "CALL" else "MULTDOWN"
+        logger.info(f"Iniciando propuesta de Multiplicador {deriv_contract_type} de ${config.STAKE_AMOUNT}...")
         
-        # 1. Solicitar Propuesta (Proposal)
+        # 1. Solicitar Propuesta (Proposal) para Multiplicador
         proposal_req = {
             "proposal": 1,
             "amount": config.STAKE_AMOUNT,
-            "basis": config.BASIS,
-            "contract_type": contract_type,
+            "basis": "stake",
+            "contract_type": deriv_contract_type,
             "currency": "USD",
-            "duration": config.DURATION,
-            "duration_unit": config.DURATION_UNIT,
+            "multiplier": config.MULTIPLIER,
             "symbol": config.SYMBOL
         }
         
         proposal_res = await self.send_request(proposal_req)
         if "error" in proposal_res:
-            logger.error(f"Error en la propuesta: {proposal_res['error']['message']}")
+            logger.error(f"Error en la propuesta de multiplicador: {proposal_res['error']['message']}")
             return False
             
         proposal_id = proposal_res["proposal"]["id"]
         spot_price = proposal_res["proposal"]["spot"]
-        logger.info(f"Propuesta recibida ID: {proposal_id} | Spot del mercado: {spot_price}")
+        logger.info(f"Propuesta de Multiplicador recibida ID: {proposal_id} | Spot: {spot_price}")
         
         # 2. Comprar el Contrato
         buy_req = {
@@ -333,58 +357,115 @@ class DerivTradingBot:
         
         buy_res = await self.send_request(buy_req)
         if "error" in buy_res:
-            logger.error(f"Error al comprar contrato: {buy_res['error']['message']}")
+            logger.error(f"Error al comprar contrato multiplicador: {buy_res['error']['message']}")
             return False
             
         contract_id = buy_res["buy"]["contract_id"]
-        logger.info(f"Contrato comprado exitosamente! ID de Contrato: {contract_id}")
+        logger.info(f"¡Contrato Multiplicador comprado con éxito! ID: {contract_id}")
         self.total_trades += 1
         
-        # 3. Esperar a que se resuelva el contrato (seguimiento)
-        logger.info("Esperando resolución del contrato...")
-        # Cada tick tarda 1 seg aprox. DURATION ticks = DURATION segundos.
-        # Esperamos un poco más para asegurar el procesamiento en los servidores de Deriv.
-        await asyncio.sleep(config.DURATION + 2)
+        # 3. Monitoreo Activo del Contrato (TP 10% / SL 30%)
+        logger.info("Iniciando monitoreo dinámico del contrato...")
+        start_time = time.time()
+        final_profit = 0.0
+        final_status = "lost"
+        is_sold = False
         
-        # Verificar resultado mediante el estado del contrato
-        contract_status_req = {
-            "proposal_open_contract": 1,
-            "contract_id": contract_id
-        }
-        
-        status_res = await self.send_request(contract_status_req)
-        if "error" in status_res:
-            logger.error(f"Error al verificar estado del contrato: {status_res['error']['message']}")
-            # Alternativa: Actualizar balance y deducir ganancia/pérdida
-            await self.update_balance()
-            return False
+        while (time.time() - start_time) < config.MAX_CONTRACT_WAIT:
+            await asyncio.sleep(config.CONTRACT_POLL_INTERVAL)
             
-        contract_data = status_res["proposal_open_contract"]
-        is_expired = contract_data.get("is_expired", 0)
-        
-        # Si aún no ha expirado del todo en el WS, esperar un poco
-        retries = 0
-        while not is_expired and retries < 5:
-            await asyncio.sleep(1)
+            # Consultar estado actual del contrato
+            contract_status_req = {
+                "proposal_open_contract": 1,
+                "contract_id": contract_id
+            }
             status_res = await self.send_request(contract_status_req)
+            if "error" in status_res:
+                logger.error(f"Error al verificar contrato abierto: {status_res['error']['message']}")
+                continue
+                
             contract_data = status_res["proposal_open_contract"]
+            status = contract_data.get("status", "open")
             is_expired = contract_data.get("is_expired", 0)
-            retries += 1
             
-        profit = float(contract_data.get("profit", 0.0))
-        status = contract_data.get("status", "unknown") # 'won' o 'lost'
-        
-        logger.info(f"Contrato finalizado. Estado: {status.upper()} | Beneficio neto: ${profit:.2f}")
-        
+            # Si ya se cerró en el servidor por sí mismo
+            if status != "open" or is_expired == 1:
+                final_profit = float(contract_data.get("profit", 0.0))
+                final_status = status
+                logger.info(f"El contrato se cerró automáticamente en el servidor. Estado: {final_status.upper()} | Profit: ${final_profit:.2f}")
+                break
+                
+            # Calcular profit actual y porcentaje
+            profit = float(contract_data.get("profit", 0.0))
+            stake = float(contract_data.get("buy_price", config.STAKE_AMOUNT))
+            profit_pct = profit / stake
+            
+            logger.info(f"Monitoreo -> Profit: ${profit:.2f} ({profit_pct*100:.1f}%) | Tiempo: {int(time.time() - start_time)}s")
+            
+            # Verificar si se cumple Take Profit (10%)
+            if profit_pct >= config.TAKE_PROFIT_PCT:
+                logger.info(f"🎯 ¡OBJETIVO DE GANANCIA DE {config.TAKE_PROFIT_PCT*100:.1f}% ALCANZADO! Vendiendo contrato early...")
+                sell_req = {
+                    "sell": contract_id,
+                    "price": 0
+                }
+                sell_res = await self.send_request(sell_req)
+                if "error" in sell_res:
+                    logger.error(f"Error al intentar vender anticipadamente (TP): {sell_res['error']['message']}")
+                else:
+                    logger.info("¡Venta anticipada exitosa!")
+                    is_sold = True
+                    
+            # Verificar si se cumple Stop Loss (30%)
+            elif profit_pct <= -config.STOP_LOSS_PCT:
+                logger.warning(f"🛑 ¡LÍMITE DE PÉRDIDA DE {config.STOP_LOSS_PCT*100:.1f}% ALCANZADO! Vendiendo contrato early para detener pérdidas...")
+                sell_req = {
+                    "sell": contract_id,
+                    "price": 0
+                }
+                sell_res = await self.send_request(sell_req)
+                if "error" in sell_res:
+                    logger.error(f"Error al intentar vender anticipadamente (SL): {sell_res['error']['message']}")
+                else:
+                    logger.warning("¡Venta anticipada de protección ejecutada exitosamente!")
+                    is_sold = True
+            
+            # Si se vendió con éxito, obtener el resultado final
+            if is_sold:
+                # Esperar 1 segundo y pedir el reporte final del contrato cerrado
+                await asyncio.sleep(1)
+                final_res = await self.send_request({"proposal_open_contract": 1, "contract_id": contract_id})
+                if "proposal_open_contract" in final_res:
+                    final_data = final_res["proposal_open_contract"]
+                    final_profit = float(final_data.get("profit", profit))
+                    final_status = final_data.get("status", "won" if final_profit > 0 else "lost")
+                else:
+                    final_profit = profit
+                    final_status = "won" if final_profit > 0 else "lost"
+                break
+        else:
+            # Límite de tiempo excedido, vender por seguridad
+            logger.warning("⏳ Tiempo máximo de espera del contrato excedido. Cerrando por seguridad...")
+            sell_res = await self.send_request({"sell": contract_id, "price": 0})
+            await asyncio.sleep(1)
+            final_res = await self.send_request({"proposal_open_contract": 1, "contract_id": contract_id})
+            if "proposal_open_contract" in final_res:
+                final_data = final_res["proposal_open_contract"]
+                final_profit = float(final_data.get("profit", 0.0))
+                final_status = final_data.get("status", "won" if final_profit > 0 else "lost")
+            else:
+                final_profit = 0.0
+                final_status = "lost"
+
         # Registrar estadísticas de la sesión
-        if profit > 0:
+        if final_profit > 0:
             self.wins += 1
             self.consecutive_losses = 0
-            logger.info("🎉 Operación GANADA.")
+            logger.info(f"🎉 Operación GANADA. Beneficio: +${final_profit:.2f}")
         else:
             self.losses += 1
             self.consecutive_losses += 1
-            logger.warning(f"⚠️ Operación PERDIDA. Racha de pérdidas: {self.consecutive_losses}")
+            logger.warning(f"⚠️ Operación PERDIDA o CERRADA EN NEGATIVO. Racha de pérdidas: {self.consecutive_losses} | Resultado: ${final_profit:.2f}")
             # Cooldown después de pérdida
             if config.COOLDOWN_AFTER_LOSS > 0:
                 logger.info(f"Entrando en periodo de enfriamiento de {config.COOLDOWN_AFTER_LOSS} segundos...")
@@ -396,7 +477,7 @@ class DerivTradingBot:
         # Escribir en registro CSV
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(config.TRADES_CSV, "a", encoding="utf-8") as f:
-            f.write(f"{timestamp},{contract_type},{config.STAKE_AMOUNT},{profit},{status},{self.current_balance}\n")
+            f.write(f"{timestamp},MULTIPLIER_{contract_type},{config.STAKE_AMOUNT},{final_profit},{final_status},{self.current_balance}\n")
             
         return True
 
@@ -422,7 +503,7 @@ class DerivTradingBot:
             # Enviar notificación de inicio de jornada por WhatsApp (con saldos)
             accounts_text = self.format_accounts_for_whatsapp()
             self.send_whatsapp(
-                f"🤖 *Deriv Scalper Bot - Jornada Iniciada*\n"
+                f"🤖 *Deriv Multiplier Bot - Jornada Iniciada*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"{accounts_text}\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
@@ -455,7 +536,6 @@ class DerivTradingBot:
                     break
 
                 # 2. Actualizar datos de mercado (obtener último tick)
-                # Consultamos de nuevo el historial para obtener el tick más reciente
                 tick_req = {
                     "ticks_history": config.SYMBOL,
                     "adjust_start_time": 1,
@@ -467,7 +547,7 @@ class DerivTradingBot:
                 if "history" in tick_res and len(tick_res["history"]["prices"]) > 0:
                     latest_price = float(tick_res["history"]["prices"][0])
                     # Mantener el tamaño de la lista
-                    if latest_price != self.ticks_history[-1]:
+                    if not self.ticks_history or latest_price != self.ticks_history[-1]:
                         self.ticks_history.append(latest_price)
                         if len(self.ticks_history) > config.TICK_HISTORY_COUNT:
                             self.ticks_history.pop(0)
@@ -502,7 +582,7 @@ class DerivTradingBot:
             status_text = "META ALCANZADA ✅" if self.session_profit >= config.DAILY_PROFIT_TARGET else "STOP LOSS ALCANZADO" if self.session_profit <= -config.DAILY_LOSS_LIMIT else "FIN DE JORNADA"
 
             self.send_whatsapp(
-                f"{status_emoji} *Deriv Scalper Bot - Reporte Diario*\n"
+                f"{status_emoji} *Deriv Multiplier Bot - Reporte Diario*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📝 *Estado:* {status_text}\n"
                 f"📈 *Resultado Neto:* {'+' if self.session_profit >= 0 else ''}${self.session_profit:.2f} USD\n"
@@ -522,7 +602,7 @@ class DerivTradingBot:
             
             # Enviar notificación de error
             self.send_whatsapp(
-                f"⚠️ *Deriv Scalper Bot - ALERTA DE ERROR*\n"
+                f"⚠️ *Deriv Multiplier Bot - ALERTA DE ERROR*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"🚨 El bot se ha detenido debido a un error crítico:\n"
                 f"`{str(e)}`"
