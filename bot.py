@@ -361,8 +361,17 @@ class DerivTradingBot:
 
         return None
 
+    async def sell_contract_early(self, contract_id):
+        """Envía la solicitud para vender un contrato anticipadamente"""
+        sell_res = await self.send_request({"sell": contract_id, "price": 0})
+        if "error" in sell_res:
+            logger.error(f"Error al intentar vender contrato {contract_id}: {sell_res['error']['message']}")
+            return False
+        logger.info(f"¡Venta anticipada exitosa para contrato {contract_id}!")
+        return True
+
     async def execute_trade(self, contract_type):
-        """Ejecuta una operación multiplicadora y la gestiona activamente (TP 10% / SL 30%)"""
+        """Ejecuta una operación multiplicadora y la gestiona activamente con Trailing Profit Lock y Time Decay Exit"""
         deriv_contract_type = "MULTUP" if contract_type == "CALL" else "MULTDOWN"
         logger.info(f"Iniciando propuesta de Multiplicador {deriv_contract_type} de ${config.STAKE_AMOUNT}...")
         
@@ -401,12 +410,13 @@ class DerivTradingBot:
         logger.info(f"¡Contrato Multiplicador comprado con éxito! ID: {contract_id}")
         self.total_trades += 1
         
-        # 3. Monitoreo Activo del Contrato (TP 10% / SL 30%)
-        logger.info("Iniciando monitoreo dinámico del contrato...")
+        # 3. Monitoreo Activo del Contrato (TP, SL, Trailing Lock y Time Decay Exit)
+        logger.info("Iniciando monitoreo dinámico con protección de ganancias...")
         start_time = time.time()
         final_profit = 0.0
         final_status = "lost"
         is_sold = False
+        peak_profit_pct = 0.0
         
         while (time.time() - start_time) < config.MAX_CONTRACT_WAIT:
             await asyncio.sleep(config.CONTRACT_POLL_INTERVAL)
@@ -425,7 +435,7 @@ class DerivTradingBot:
             status = contract_data.get("status", "open")
             is_expired = contract_data.get("is_expired", 0)
             
-            # Si ya se cerró en el servidor por sí mismo
+            # Si ya se cerró en el servidor
             if status != "open" or is_expired == 1:
                 final_profit = float(contract_data.get("profit", 0.0))
                 final_status = status
@@ -436,40 +446,43 @@ class DerivTradingBot:
             profit = float(contract_data.get("profit", 0.0))
             stake = float(contract_data.get("buy_price", config.STAKE_AMOUNT))
             profit_pct = profit / stake
+            duration = time.time() - start_time
             
-            logger.info(f"Monitoreo -> Profit: ${profit:.2f} ({profit_pct*100:.1f}%) | Tiempo: {int(time.time() - start_time)}s")
+            # Actualizar el pico máximo de ganancia
+            if profit_pct > peak_profit_pct:
+                peak_profit_pct = profit_pct
             
-            # Verificar si se cumple Take Profit (10%)
+            logger.info(
+                f"Monitoreo -> Profit: ${profit:.2f} ({profit_pct*100:.1f}%) | "
+                f"Pico: {peak_profit_pct*100:.1f}% | Tiempo: {int(duration)}s"
+            )
+            
+            # A. Take Profit absoluto (+45%)
             if profit_pct >= config.TAKE_PROFIT_PCT:
-                logger.info(f"🎯 ¡OBJETIVO DE GANANCIA DE {config.TAKE_PROFIT_PCT*100:.1f}% ALCANZADO! Vendiendo contrato early...")
-                sell_req = {
-                    "sell": contract_id,
-                    "price": 0
-                }
-                sell_res = await self.send_request(sell_req)
-                if "error" in sell_res:
-                    logger.error(f"Error al intentar vender anticipadamente (TP): {sell_res['error']['message']}")
-                else:
-                    logger.info("¡Venta anticipada exitosa!")
-                    is_sold = True
-                    
-            # Verificar si se cumple Stop Loss (30%)
+                logger.info(f"🎯 ¡OBJETIVO DE GANANCIA DE {config.TAKE_PROFIT_PCT*100:.1f}% ALCANZADO! Vendiendo...")
+                is_sold = await self.sell_contract_early(contract_id)
+                
+            # B. Stop Loss absoluto (-15%)
             elif profit_pct <= -config.STOP_LOSS_PCT:
-                logger.warning(f"🛑 ¡LÍMITE DE PÉRDIDA DE {config.STOP_LOSS_PCT*100:.1f}% ALCANZADO! Vendiendo contrato early para detener pérdidas...")
-                sell_req = {
-                    "sell": contract_id,
-                    "price": 0
-                }
-                sell_res = await self.send_request(sell_req)
-                if "error" in sell_res:
-                    logger.error(f"Error al intentar vender anticipadamente (SL): {sell_res['error']['message']}")
-                else:
-                    logger.warning("¡Venta anticipada de protección ejecutada exitosamente!")
-                    is_sold = True
+                logger.warning(f"🛑 ¡LÍMITE DE PÉRDIDA DE {config.STOP_LOSS_PCT*100:.1f}% ALCANZADO! Vendiendo...")
+                is_sold = await self.sell_contract_early(contract_id)
+                
+            # C. Trailing Profit Lock (Asegurar ganancias cuando el precio retrocede)
+            elif peak_profit_pct >= 0.20 and profit_pct <= 0.08:
+                logger.info(f"🛡️ [Trailing Lock] Ganancia cayó de {peak_profit_pct*100:.1f}% a {profit_pct*100:.1f}%. Asegurando +8%...")
+                is_sold = await self.sell_contract_early(contract_id)
+                
+            elif peak_profit_pct >= 0.10 and profit_pct <= 0.03:
+                logger.info(f"🛡️ [Trailing Lock] Ganancia cayó de {peak_profit_pct*100:.1f}% a {profit_pct*100:.1f}%. Asegurando +3%...")
+                is_sold = await self.sell_contract_early(contract_id)
+
+            # D. Filtro de Agotamiento de Tiempo (Time Decay Exit)
+            # Si el contrato lleva más de 120 segundos y tiene ganancia positiva de al menos 2%, cerramos para evitar reversión.
+            elif duration >= 120 and profit_pct >= 0.02:
+                logger.info(f"⏳ [Time Decay Exit] Contrato estancado por {int(duration)}s pero con ganancia de {profit_pct*100:.1f}%. Asegurando profit...")
+                is_sold = await self.sell_contract_early(contract_id)
             
-            # Si se vendió con éxito, obtener el resultado final
             if is_sold:
-                # Esperar 1 segundo y pedir el reporte final del contrato cerrado
                 await asyncio.sleep(1)
                 final_res = await self.send_request({"proposal_open_contract": 1, "contract_id": contract_id})
                 if "proposal_open_contract" in final_res:
@@ -483,7 +496,7 @@ class DerivTradingBot:
         else:
             # Límite de tiempo excedido, vender por seguridad
             logger.warning("⏳ Tiempo máximo de espera del contrato excedido. Cerrando por seguridad...")
-            sell_res = await self.send_request({"sell": contract_id, "price": 0})
+            await self.sell_contract_early(contract_id)
             await asyncio.sleep(1)
             final_res = await self.send_request({"proposal_open_contract": 1, "contract_id": contract_id})
             if "proposal_open_contract" in final_res:
