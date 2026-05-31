@@ -258,11 +258,12 @@ class DerivTradingBot:
 
     def get_market_signal(self):
         """
-        Estrategia de Scalping Triple Confirmación v3.0
-        Usa Bandas de Bollinger, RSI y Oscilador Estocástico.
-        Retorna 'CALL' (para MULTUP), 'PUT' (para MULTDOWN) o None (esperar).
-        La entrada requiere que las 3 señales coincidan en la misma dirección
-        Y que el mercado no venga en contra (momentum a favor).
+        Estrategia de Scalping Inteligente y Flexible v4.0 (Sistema de Scoring Ponderado)
+        Usa Bandas de Bollinger, RSI y Estocástico con puntuación flexible.
+        Puntuación máxima teórica: 9 puntos.
+        Entrada permitida si:
+        - Score >= 6 (Excelente probabilidad)
+        - Momentum inmediato está a nuestro favor (evita que el precio se venga en contra).
         """
         if len(self.ticks_history) < config.TICK_HISTORY_COUNT:
             return None
@@ -271,7 +272,7 @@ class DerivTradingBot:
         current_price = prices[-1]
         prev_price = prices[-2]
 
-        # 1. Calcular indicadores
+        # 1. Calcular indicadores técnicos
         upper_band, middle_band, lower_band = self.calculate_bollinger_bands(prices, config.BB_PERIOD, config.BB_STD_DEV)
         rsi = self.calculate_rsi(prices, config.RSI_PERIOD)
         stoch_k, stoch_d = self.calculate_stochastic(prices, config.STOCH_K_PERIOD, config.STOCH_D_PERIOD)
@@ -279,47 +280,83 @@ class DerivTradingBot:
         if upper_band is None or middle_band is None or lower_band is None:
             return None
 
-        # Rango de proximidad a las bandas (15% del semi-ancho de la banda)
+        # Rango de proximidad a las bandas
         bb_width = upper_band - lower_band
         bb_margin = bb_width * 0.15 if bb_width > 0 else 0.0
 
-        # Dirección del último tick (Momentum inmediato para asegurar que "no venga en contra")
+        # Dirección del último tick (Momentum para evitar entrar en contra)
         is_rebound_up = current_price > prev_price
         is_rebound_down = current_price < prev_price
 
+        # --- EVALUACIÓN DE SEÑAL ALCISTA (CALL) ---
+        call_score = 0
+        
+        # Bollinger (Max 3 pts)
+        if current_price <= lower_band:
+            call_score += 3  # Fuera o tocando la banda inferior (soporte fuerte)
+        elif current_price <= lower_band + bb_margin:
+            call_score += 2  # Muy cerca de la banda inferior (soporte moderado)
+        elif current_price < middle_band:
+            call_score += 1  # Por debajo de la media móvil
+
+        # RSI (Max 3 pts)
+        if rsi <= 30:
+            call_score += 3  # Sobreventa extrema
+        elif rsi <= config.RSI_OVERSOLD:
+            call_score += 2  # Sobreventa moderada
+        elif rsi <= 45:
+            call_score += 1  # Ligera sobreventa
+
+        # Estocástico (Max 3 pts)
+        if stoch_k <= 20 and stoch_d <= 20:
+            call_score += 2  # Ambos en sobreventa profunda
+        elif stoch_k <= config.STOCH_OVERSOLD and stoch_d <= config.STOCH_OVERSOLD:
+            call_score += 1  # Ambos en sobreventa moderada
+        
+        if stoch_k > stoch_d:
+            call_score += 1  # Cruce o alineación alcista activa
+
+        # --- EVALUACIÓN DE SEÑAL BAJISTA (PUT) ---
+        put_score = 0
+        
+        # Bollinger (Max 3 pts)
+        if current_price >= upper_band:
+            put_score += 3  # Fuera o tocando la banda superior (resistencia fuerte)
+        elif current_price >= upper_band - bb_margin:
+            put_score += 2  # Muy cerca de la banda superior (resistencia moderada)
+        elif current_price > middle_band:
+            put_score += 1  # Por encima de la media móvil
+
+        # RSI (Max 3 pts)
+        if rsi >= 70:
+            put_score += 3  # Sobrecompra extrema
+        elif rsi >= config.RSI_OVERBOUGHT:
+            put_score += 2  # Sobrecompra moderada
+        elif rsi >= 55:
+            put_score += 1  # Ligera sobrecompra
+
+        # Estocástico (Max 3 pts)
+        if stoch_k >= 80 and stoch_d >= 80:
+            put_score += 2  # Ambos en sobrecompra profunda
+        elif stoch_k >= config.STOCH_OVERBOUGHT and stoch_d >= config.STOCH_OVERBOUGHT:
+            put_score += 1  # Ambos en sobrecompra moderada
+        
+        if stoch_k < stoch_d:
+            put_score += 1  # Cruce o alineación bajista activa
+
         logger.info(
-            f"Análisis Técnico -> Precio: {current_price:.3f} | "
-            f"BB: [{lower_band:.3f} - {middle_band:.3f} - {upper_band:.3f}] | "
-            f"RSI: {rsi:.2f} (SL:{config.RSI_OVERSOLD}/OB:{config.RSI_OVERBOUGHT}) | "
-            f"Stoch %K: {stoch_k:.1f}, %D: {stoch_d:.1f}"
+            f"Estrategia Scoring -> Precio: {current_price:.3f} | RSI: {rsi:.1f} | "
+            f"Stoch %K: {stoch_k:.1f}/%D: {stoch_d:.1f} | "
+            f"CALL Score: {call_score}/9 | PUT Score: {put_score}/9"
         )
 
-        # Confirmación de señal CALL (Compra):
-        # 1. El precio está en la zona de la banda inferior (soporte).
-        # 2. RSI en zona de sobreventa.
-        # 3. Estocástico en sobreventa con alineación alcista (%K > %D).
-        # 4. Momentum inmediato alcista (el último precio subió).
-        if (current_price <= lower_band + bb_margin and
-            rsi <= config.RSI_OVERSOLD and
-            stoch_k < config.STOCH_OVERSOLD and stoch_d < config.STOCH_OVERSOLD and
-            stoch_k > stoch_d and
-            is_rebound_up):
-            
-            logger.info("🟢 SEÑAL ALCISTA DETECTADA (Triple Confirmación + Momentum): Comprando MULTUP (CALL)")
+        # Umbral de decisión: Score >= 6 y momentum inmediato a favor
+        if call_score >= 6 and is_rebound_up:
+            logger.info(f"🟢 SEÑAL DE COMPRA FLEXIBLE (Score: {call_score}/9 + Momentum): Comprando MULTUP (CALL)")
             return "CALL"
-
-        # Confirmación de señal PUT (Venta):
-        # 1. El precio está en la zona de la banda superior (resistencia).
-        # 2. RSI en zona de sobrecompra.
-        # 3. Estocástico en sobrecompra con alineación bajista (%K < %D).
-        # 4. Momentum inmediato bajista (el último precio bajó).
-        if (current_price >= upper_band - bb_margin and
-            rsi >= config.RSI_OVERBOUGHT and
-            stoch_k > config.STOCH_OVERBOUGHT and stoch_d > config.STOCH_OVERBOUGHT and
-            stoch_k < stoch_d and
-            is_rebound_down):
             
-            logger.info("🔴 SEÑAL BAJISTA DETECTADA (Triple Confirmación + Momentum): Comprando MULTDOWN (PUT)")
+        if put_score >= 6 and is_rebound_down:
+            logger.info(f"🔴 SEÑAL DE VENTA FLEXIBLE (Score: {put_score}/9 + Momentum): Comprando MULTDOWN (PUT)")
             return "PUT"
 
         return None
