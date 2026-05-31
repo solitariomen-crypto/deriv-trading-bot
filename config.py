@@ -19,8 +19,8 @@ STAKE_AMOUNT = 1.0       # $1 por operación
 MULTIPLIER = 400         # Multiplicador 400x (el más conservador disponible para R_10)
 
 # TP/SL automático en el servidor de Deriv
-TAKE_PROFIT_PCT = 0.10   # Cerrar al ganar +10% del stake  → +$0.10 en $1
-STOP_LOSS_PCT   = 0.30   # Cerrar al perder -30% del stake → -$0.30 en $1
+TAKE_PROFIT_PCT = 0.45   # Cerrar al ganar +45% del stake (¡1 ganadora recupera 3 perdedoras!)
+STOP_LOSS_PCT   = 0.15   # Cerrar al perder -15% del stake (relación riesgo-beneficio 1:3)
 
 # Monitoreo del contrato abierto
 MAX_CONTRACT_WAIT      = 300   # Segundos máximos por contrato (5 min)
