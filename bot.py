@@ -284,9 +284,15 @@ class DerivTradingBot:
         bb_width = upper_band - lower_band
         bb_margin = bb_width * 0.15 if bb_width > 0 else 0.0
 
-        # Dirección del último tick (Momentum para evitar entrar en contra)
-        is_rebound_up = current_price > prev_price
-        is_rebound_down = current_price < prev_price
+        # Dirección de la tendencia mayor (inclinación de la media de Bollinger)
+        prev_middle_band = sum(prices[-21:-1]) / config.BB_PERIOD
+        is_trend_up = middle_band > prev_middle_band
+
+        # Momentum inmediato (basado en la media móvil de los últimos 5 ticks)
+        short_term_prices = prices[-5:]
+        short_sma = sum(short_term_prices) / len(short_term_prices)
+        is_rebound_up = current_price > short_sma
+        is_rebound_down = current_price < short_sma
 
         # --- EVALUACIÓN DE SEÑAL ALCISTA (CALL) ---
         call_score = 0
@@ -347,16 +353,17 @@ class DerivTradingBot:
         logger.info(
             f"Estrategia Scoring -> Precio: {current_price:.3f} | RSI: {rsi:.1f} | "
             f"Stoch %K: {stoch_k:.1f}/%D: {stoch_d:.1f} | "
-            f"CALL Score: {call_score}/9 | PUT Score: {put_score}/9"
+            f"CALL Score: {call_score}/9 | PUT Score: {put_score}/9 | "
+            f"Tendencia: {'SUBIENDO' if is_trend_up else 'BAJANDO'} | Momentum: {'ALZA' if is_rebound_up else 'BAJA' if is_rebound_down else 'NEUTRAL'}"
         )
 
-        # Umbral de decisión: Score >= 6 y momentum inmediato a favor
-        if call_score >= 6 and is_rebound_up:
-            logger.info(f"🟢 SEÑAL DE COMPRA FLEXIBLE (Score: {call_score}/9 + Momentum): Comprando MULTUP (CALL)")
+        # Umbral de decisión: Score >= 6, momentum a favor y alineado con tendencia mayor
+        if call_score >= 6 and is_rebound_up and is_trend_up:
+            logger.info(f"🟢 SEÑAL DE COMPRA CONFIRMADA (Score: {call_score}/9 + Tendencia ALCISTA + Momentum): Comprando MULTUP (CALL)")
             return "CALL"
             
-        if put_score >= 6 and is_rebound_down:
-            logger.info(f"🔴 SEÑAL DE VENTA FLEXIBLE (Score: {put_score}/9 + Momentum): Comprando MULTDOWN (PUT)")
+        if put_score >= 6 and is_rebound_down and not is_trend_up:
+            logger.info(f"🔴 SEÑAL DE VENTA CONFIRMADA (Score: {put_score}/9 + Tendencia BAJISTA + Momentum): Comprando MULTDOWN (PUT)")
             return "PUT"
 
         return None
