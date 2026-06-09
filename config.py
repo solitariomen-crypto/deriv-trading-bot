@@ -16,11 +16,11 @@ WS_URL = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
 # =============================================
 SYMBOL = "R_10"          # Volatility 10 Index (el más estable de Deriv)
 STAKE_AMOUNT = 1.0       # $1 por operación
-MULTIPLIER = 400         # Multiplicador 400x (el más conservador disponible para R_10)
+MULTIPLIER = 200         # Multiplicador 200x
 
 # TP/SL automático en el servidor de Deriv
-TAKE_PROFIT_PCT = 0.45   # Cerrar al ganar +45% del stake (¡1 ganadora recupera 3 perdedoras!)
-STOP_LOSS_PCT   = 0.15   # Cerrar al perder -15% del stake (relación riesgo-beneficio 1:3)
+TAKE_PROFIT_PCT = 0.90   # Cerrar al ganar +90% del stake (¡1 ganadora recupera 3 perdedoras!)
+STOP_LOSS_PCT   = 0.30   # Cerrar al perder -30% del stake (relación riesgo-beneficio 1:3)
 
 # Monitoreo del contrato abierto
 MAX_CONTRACT_WAIT      = 300   # Segundos máximos por contrato (5 min)
