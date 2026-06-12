@@ -58,14 +58,65 @@ class DerivTradingBot:
     async def connect(self):
         """Establece conexión WebSocket con Deriv"""
         logger.info(f"Conectando a {self.ws_url}...")
-        self.ws = await websockets.connect(self.ws_url)
+        self.ws = await websockets.connect(self.ws_url, ping_interval=None)
         logger.info("Conexión WebSocket establecida.")
 
+    async def reconnect(self):
+        """Cierra la conexión actual y reconecta + autoriza de nuevo"""
+        logger.warning("🔄 Intentando reconexión WebSocket...")
+        try:
+            if self.ws:
+                await self.ws.close()
+        except Exception:
+            pass
+        for attempt in range(1, 6):
+            try:
+                await asyncio.sleep(5 * attempt)  # Backoff: 5s, 10s, 15s, 20s, 25s
+                await self.connect()
+                await self.authorize()
+                if not await self.fetch_tick_history():
+                    raise Exception("No se pudo recargar historial tras reconexión.")
+                logger.info("✅ Reconexión exitosa.")
+                return True
+            except Exception as e:
+                logger.warning(f"Reconexión fallida (intento {attempt}/5): {e}")
+        logger.error("❌ No se pudo reconectar tras 5 intentos. Deteniendo bot.")
+        self.running = False
+        return False
+
     async def send_request(self, request_data):
-        """Envía una petición al WebSocket y retorna la respuesta"""
-        await self.ws.send(json.dumps(request_data))
-        response = await self.ws.recv()
-        return json.loads(response)
+        """Envía una petición al WebSocket y retorna la respuesta. Reconecta si la conexión cayó."""
+        try:
+            await self.ws.send(json.dumps(request_data))
+            response = await self.ws.recv()
+            return json.loads(response)
+        except (websockets.exceptions.ConnectionClosedError,
+                websockets.exceptions.ConnectionClosedOK) as e:
+            logger.warning(f"⚠️ Conexión WebSocket perdida al enviar petición: {e}. Reconectando...")
+            ok = await self.reconnect()
+            if ok:
+                # Reintentar la petición tras reconexión exitosa
+                await self.ws.send(json.dumps(request_data))
+                response = await self.ws.recv()
+                return json.loads(response)
+            raise
+
+    async def ping_keepalive(self):
+        """Envía un ping periódico al servidor Deriv para mantener la conexión activa."""
+        while self.running:
+            try:
+                await asyncio.sleep(30)  # Ping cada 30 segundos
+                if self.ws and self.ws.open:
+                    await self.ws.send(json.dumps({"ping": 1}))
+                    await self.ws.recv()  # Consume la respuesta del ping
+                    logger.debug("📡 Ping keepalive enviado.")
+            except (websockets.exceptions.ConnectionClosedError,
+                    websockets.exceptions.ConnectionClosedOK):
+                logger.warning("⚠️ Keepalive: conexión cerrada. El loop principal se encargará de reconectar.")
+                break
+            except Exception as e:
+                logger.warning(f"⚠️ Error en keepalive: {e}")
+                break
 
     async def authorize(self):
         """Autoriza la sesión con el API Token"""
@@ -539,7 +590,9 @@ class DerivTradingBot:
         return True
 
     async def run(self):
-        """Ciclo principal de ejecución del bot"""
+        """Ciclo principal de ejecución del bot con keepalive y reconexión automática"""
+        session_started = False
+        keepalive_task = None
         try:
             await self.connect()
             await self.authorize()
@@ -558,17 +611,22 @@ class DerivTradingBot:
             logger.info("==================================================")
 
             # Enviar notificación de inicio de jornada por WhatsApp (con saldos)
-            accounts_text = self.format_accounts_for_whatsapp()
-            self.send_whatsapp(
-                f"🤖 *Deriv Multiplier Bot - Jornada Iniciada*\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"{accounts_text}\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"🎯 *Objetivo diario:* +${config.DAILY_PROFIT_TARGET:.2f} USD\n"
-                f"🛑 *Límite de pérdida:* -${config.DAILY_LOSS_LIMIT:.2f} USD\n"
-                f"📊 *Mercado:* Volatility {config.SYMBOL}\n"
-                f"⏱️ *Hora:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
-            )
+            if not session_started:
+                session_started = True
+                accounts_text = self.format_accounts_for_whatsapp()
+                self.send_whatsapp(
+                    f"🤖 *Deriv Multiplier Bot - Jornada Iniciada*\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"{accounts_text}\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"🎯 *Objetivo diario:* +${config.DAILY_PROFIT_TARGET:.2f} USD\n"
+                    f"🛑 *Límite de pérdida:* -${config.DAILY_LOSS_LIMIT:.2f} USD\n"
+                    f"📊 *Mercado:* Volatility {config.SYMBOL}\n"
+                    f"⏱️ *Hora:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+                )
+
+            # Lanzar tarea de keepalive en segundo plano
+            keepalive_task = asyncio.ensure_future(self.ping_keepalive())
 
             while self.running:
                 # 1. Verificar condiciones de parada (Take Profit / Stop Loss)
@@ -593,30 +651,39 @@ class DerivTradingBot:
                     break
 
                 # 2. Actualizar datos de mercado (obtener último tick)
-                tick_req = {
-                    "ticks_history": config.SYMBOL,
-                    "adjust_start_time": 1,
-                    "count": 1,
-                    "end": "latest",
-                    "style": "ticks"
-                }
-                tick_res = await self.send_request(tick_req)
-                if "history" in tick_res and len(tick_res["history"]["prices"]) > 0:
-                    latest_price = float(tick_res["history"]["prices"][0])
-                    # Mantener el tamaño de la lista
-                    if not self.ticks_history or latest_price != self.ticks_history[-1]:
-                        self.ticks_history.append(latest_price)
-                        if len(self.ticks_history) > config.TICK_HISTORY_COUNT:
-                            self.ticks_history.pop(0)
+                try:
+                    tick_req = {
+                        "ticks_history": config.SYMBOL,
+                        "adjust_start_time": 1,
+                        "count": 1,
+                        "end": "latest",
+                        "style": "ticks"
+                    }
+                    tick_res = await self.send_request(tick_req)
+                    if "history" in tick_res and len(tick_res["history"]["prices"]) > 0:
+                        latest_price = float(tick_res["history"]["prices"][0])
+                        if not self.ticks_history or latest_price != self.ticks_history[-1]:
+                            self.ticks_history.append(latest_price)
+                            if len(self.ticks_history) > config.TICK_HISTORY_COUNT:
+                                self.ticks_history.pop(0)
+                except (websockets.exceptions.ConnectionClosedError,
+                        websockets.exceptions.ConnectionClosedOK) as e:
+                    logger.warning(f"⚠️ Conexión caída en el loop principal: {e}. Intentando reconexión...")
+                    if keepalive_task and not keepalive_task.done():
+                        keepalive_task.cancel()
+                    ok = await self.reconnect()
+                    if not ok:
+                        break
+                    # Relanzar keepalive tras reconexión
+                    keepalive_task = asyncio.ensure_future(self.ping_keepalive())
+                    continue
 
                 # 3. Analizar mercado para obtener señales
                 signal = self.get_market_signal()
                 
                 if signal:
-                    # Ejecutar la operación según la señal
                     await self.execute_trade(signal)
                 else:
-                    # Esperar antes del siguiente análisis
                     await asyncio.sleep(config.TRADE_INTERVAL)
 
             # Resumen al finalizar la jornada
@@ -631,10 +698,8 @@ class DerivTradingBot:
             await self.fetch_all_accounts()
             accounts_text = self.format_accounts_for_whatsapp()
 
-            # Eficiencia de la sesión
             win_rate = (self.wins / self.total_trades * 100) if self.total_trades > 0 else 0.0
 
-            # Generar estado de finalización y enviar notificación final
             status_emoji = "🎯" if self.session_profit >= config.DAILY_PROFIT_TARGET else "🛑" if self.session_profit <= -config.DAILY_LOSS_LIMIT else "⏳"
             status_text = "META ALCANZADA ✅" if self.session_profit >= config.DAILY_PROFIT_TARGET else "STOP LOSS ALCANZADO" if self.session_profit <= -config.DAILY_LOSS_LIMIT else "FIN DE JORNADA"
 
@@ -656,8 +721,6 @@ class DerivTradingBot:
         except Exception as e:
             err_msg = f"Ocurrió un error inesperado durante la ejecución: {e}"
             logger.exception(err_msg)
-            
-            # Enviar notificación de error
             self.send_whatsapp(
                 f"⚠️ *Deriv Multiplier Bot - ALERTA DE ERROR*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
@@ -665,8 +728,13 @@ class DerivTradingBot:
                 f"`{str(e)}`"
             )
         finally:
+            if keepalive_task and not keepalive_task.done():
+                keepalive_task.cancel()
             if self.ws:
-                await self.ws.close()
+                try:
+                    await self.ws.close()
+                except Exception:
+                    pass
                 logger.info("Conexión WebSocket cerrada.")
 
 if __name__ == "__main__":
