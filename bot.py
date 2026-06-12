@@ -54,6 +54,9 @@ class DerivTradingBot:
         self.ticks_history = []
         self.running = True
         self.account_balances = []   # Lista de todas las cuentas (demo + real)
+        self.login_id = None
+        self.currency = "USD"
+        self.is_virtual = True
 
     async def connect(self):
         """Establece conexión WebSocket con Deriv"""
@@ -136,10 +139,13 @@ class DerivTradingBot:
             raise Exception(f"Fallo en la autorización: {res['error']['message']}")
         
         auth_data = res["authorize"]
+        self.login_id = auth_data.get("loginid")
+        self.currency = auth_data.get("currency", "USD")
+        self.is_virtual = int(auth_data.get("is_virtual", 1)) == 1
         self.current_balance = float(auth_data["balance"])
         self.initial_balance = self.current_balance
         logger.info(f"Autorización exitosa. Usuario: {auth_data['email']}")
-        logger.info(f"Balance inicial de la cuenta: ${self.current_balance:.2f} {auth_data['currency']}")
+        logger.info(f"Balance inicial de la cuenta: ${self.current_balance:.2f} {self.currency}")
         
         # Guardar en archivo CSV un encabezado si no existe
         if not os.path.exists(config.TRADES_CSV):
@@ -203,7 +209,10 @@ class DerivTradingBot:
     def format_accounts_for_whatsapp(self):
         """Formatea la lista de cuentas para el mensaje de WhatsApp"""
         if not self.account_balances:
-            return "  (No disponible)"
+            if self.login_id:
+                account_type = "🧪 DEMO" if self.is_virtual else "💳 REAL"
+                return f"👤 *Cuenta:* {self.login_id} ({account_type})\n💵 *Balance:* {self.current_balance:.2f} {self.currency}"
+            return "⚠️ *Saldo:* (No disponible)"
         demos = [a for a in self.account_balances if a["type"] == "DEMO"]
         reals = [a for a in self.account_balances if a["type"] == "REAL"]
         lines = []
@@ -615,14 +624,17 @@ class DerivTradingBot:
                 session_started = True
                 accounts_text = self.format_accounts_for_whatsapp()
                 self.send_whatsapp(
-                    f"🤖 *Deriv Multiplier Bot - Jornada Iniciada*\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"🤖 *Deriv Trading Bot - Jornada Iniciada*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"⚙️ *CONFIGURACIÓN ACTIVA*\n"
+                    f"📊 *Mercado:* Volatility {config.SYMBOL} Index\n"
+                    f"🎯 *Objetivo de Ganancia:* {config.DAILY_PROFIT_TARGET:.2f} USD\n"
+                    f"🛑 *Límite de Pérdida:* {config.DAILY_LOSS_LIMIT:.2f} USD\n"
+                    f"⚖️ *Inversión por Operación:* {config.STAKE_AMOUNT:.2f} USD (x{config.MULTIPLIER})\n\n"
+                    f"💰 *SALDO DE LA CUENTA*\n"
                     f"{accounts_text}\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"🎯 *Objetivo diario:* +${config.DAILY_PROFIT_TARGET:.2f} USD\n"
-                    f"🛑 *Límite de pérdida:* -${config.DAILY_LOSS_LIMIT:.2f} USD\n"
-                    f"📊 *Mercado:* Volatility {config.SYMBOL}\n"
-                    f"⏱️ *Hora:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"⏱️ _Hora de Inicio: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}_"
                 )
 
             # Lanzar tarea de keepalive en segundo plano
@@ -704,28 +716,34 @@ class DerivTradingBot:
             status_text = "META ALCANZADA ✅" if self.session_profit >= config.DAILY_PROFIT_TARGET else "STOP LOSS ALCANZADO" if self.session_profit <= -config.DAILY_LOSS_LIMIT else "FIN DE JORNADA"
 
             self.send_whatsapp(
-                f"{status_emoji} *Deriv Multiplier Bot - Reporte Diario*\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"📝 *Estado:* {status_text}\n"
-                f"📈 *Resultado Neto:* {'+' if self.session_profit >= 0 else ''}${self.session_profit:.2f} USD\n"
-                f"🔄 *Operaciones:* {self.total_trades} total\n"
+                f"📊 *Deriv Trading Bot - Reporte Diario*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📝 *ESTADO DE LA SESIÓN*\n"
+                f"{status_emoji} {status_text}\n\n"
+                f"📈 *RESULTADOS DE HOY*\n"
+                f"💵 Ganancia/Pérdida Neta: {self.session_profit:.2f} USD\n"
+                f"🔄 Operaciones Totales: {self.total_trades}\n"
                 f"   🟢 Ganadas: {self.wins}  |  🔴 Perdidas: {self.losses}\n"
-                f"   📊 Efectividad: {win_rate:.1f}%\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"💰 *Saldos Actualizados:*\n"
+                f"   📊 Efectividad (Win Rate): {win_rate:.1f}%\n\n"
+                f"💰 *SALDOS ACTUALIZADOS*\n"
                 f"{accounts_text}\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"⏱️ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏱️ _Hora de Cierre: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}_"
             )
 
         except Exception as e:
             err_msg = f"Ocurrió un error inesperado durante la ejecución: {e}"
             logger.exception(err_msg)
             self.send_whatsapp(
-                f"⚠️ *Deriv Multiplier Bot - ALERTA DE ERROR*\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"🚨 El bot se ha detenido debido a un error crítico:\n"
-                f"`{str(e)}`"
+                f"🚨 *Deriv Trading Bot - ALERTA CRÍTICA*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"El bot se ha detenido inesperadamente debido a un error del sistema.\n\n"
+                f"⚠️ *Detalle del Error:*\n"
+                f"`{str(e)}`\n\n"
+                f"🔍 *Recomendación:*\n"
+                f"Por favor, revise los logs en GitHub Actions para más detalles.\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏱️ _Hora del Incidente: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}_"
             )
         finally:
             if keepalive_task and not keepalive_task.done():
