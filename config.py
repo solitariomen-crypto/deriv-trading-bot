@@ -6,8 +6,10 @@ import os
 # =============================================
 # CONFIGURACIÓN DE API
 # =============================================
-_env_token = os.environ.get("DERIV_API_TOKEN")
-API_TOKEN = _env_token.strip() if _env_token and _env_token.strip() else "hWG6PhodZEHSEiO"
+# El token se lee EXCLUSIVAMENTE de la variable de entorno DERIV_API_TOKEN
+# Configúralo en GitHub > Settings > Secrets and variables > Actions
+_env_token = os.environ.get("DERIV_API_TOKEN", "")
+API_TOKEN = _env_token.strip() if _env_token else ""
 APP_ID = 1089
 WS_URL = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
 
@@ -65,7 +67,9 @@ TRADES_CSV = "trades_history.csv"
 
 # =============================================
 # NOTIFICACIONES WHATSAPP (CallMeBot)
+# Configura WHATSAPP_PHONE y WHATSAPP_API_KEY
+# en GitHub > Settings > Secrets and variables > Actions
 # =============================================
 WHATSAPP_ENABLED = True
-WHATSAPP_PHONE   = "+584141629417"
-WHATSAPP_API_KEY = "3610205"
+WHATSAPP_PHONE   = os.environ.get("WHATSAPP_PHONE", "")
+WHATSAPP_API_KEY = os.environ.get("WHATSAPP_API_KEY", "")
