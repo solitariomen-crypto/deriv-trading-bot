@@ -74,5 +74,5 @@ Para evitar exponer tus credenciales y números en el código público, ve a **S
 
 ## 🔒 Consejos de Seguridad Críticos
 
-1. **Renueva tu API Token expuesto**: Tu API key `hWG6PhodZEHSEiO` ha sido enviada en el chat y podría quedar expuesta. Te recomendamos encarecidamente entrar a tu portal de [Deriv Token Management](https://app.deriv.com/account/api-token), eliminar ese token viejo y crear uno nuevo con permisos exclusivos de **Lectura (Read)** y **Operación (Trade)**.
+1. **Renueva tu API Token expuesto**: Tu API key XXXXXX ha sido enviada en el chat y podría quedar expuesta. Te recomendamos encarecidamente entrar a tu portal de [Deriv Token Management](https://app.deriv.com/account/api-token), eliminar ese token viejo y crear uno nuevo con permisos exclusivos de **Lectura (Read)** y **Operación (Trade)**.
 2. **Entorno Demo Inicial**: Te recomendamos realizar las primeras ejecuciones del flujo de GitHub Actions vinculando el API Token de una **cuenta demo** para verificar el comportamiento del bot en el mercado antes de usar fondos reales.
