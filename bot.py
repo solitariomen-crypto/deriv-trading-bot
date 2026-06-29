@@ -35,12 +35,12 @@ class DerivTradingBot:
             # Limpiar espacios y comillas accidentales que invalidan la estructura del token
             self.api_token = env_token.strip().replace('"', '').replace("'", "")
             logger.info("Usando API Token provisto por la variable de entorno de GitHub.")
+        elif config.API_TOKEN and config.API_TOKEN.strip():
+            self.api_token = config.API_TOKEN.strip().replace('"', '').replace("'", "")
+            logger.info("Usando API Token de la configuración.")
         else:
-            raw_token = config.API_TOKEN if config.API_TOKEN else ""
-            if not raw_token or not raw_token.strip():
-                raw_token = "hWG6PhodZEHSEiO"
-            self.api_token = raw_token.strip().replace('"', '').replace("'", "")
-            logger.info("Usando API Token predeterminado de la configuración.")
+            self.api_token = ""
+            logger.error("⚠️ No se encontró API Token. Configúralo como variable de entorno DERIV_API_TOKEN.")
             
         self.ws_url = config.WS_URL
         self.ws = None
